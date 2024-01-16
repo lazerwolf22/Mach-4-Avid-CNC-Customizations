@@ -35,10 +35,6 @@ local ToolChange = {
 package.path = package.path .. ";./Modules/CorbinsWorkshop/?.lua"
 local ToolForks = require 'ToolForks'
 
-if CWUtilities == nil then
-	CWUtilities= require 'CWUtilities'
-end
-
 -- must be the first thing called, and this file calls it.
 function ToolChange.internal.Initialize()
 	ToolChange.internal.inst = mc.mcGetInstance("ToolChange.lua")
@@ -74,64 +70,6 @@ end
 
 ToolChange.internal.Initialize()
 
-function ToolChange.SaveMTCPosition() 
-	-- Based on Avid's ScreenScript; using the same code to avoid confusion in case the position was set somewhere else.
-    local Xpos = mc.mcAxisGetMachinePos(inst, mc.X_AXIS)
-    mc.mcProfileWriteString(inst, "RememberPos", "X", string.format (Xpos))
-    local Ypos = mc.mcAxisGetMachinePos(inst, mc.Y_AXIS) -- Get current Y (1) Machine Coordinates
-    mc.mcProfileWriteString(inst, "RememberPos", "Y", string.format (Ypos)) --Create a register and write the machine coordinates to it
-    local Zpos = mc.mcAxisGetMachinePos(inst, mc.Z_AXIS) -- Get current Z (2) Machine Coordinates
-    mc.mcProfileWriteString(inst, "RememberPos", "Z", string.format (Zpos)) --Create a register and write the machine coordinates to it
-    local PosUnits = mc.mcCntlGetUnitsCurrent(inst)
-    mc.mcProfileWriteInt(inst, "RememberPos", "PosUnits", PosUnits)
-	
-	return Xpos, Ypos, Zpos	
-end
-
--- public entry for buttons to call
-function ToolChange.GotoMTCPosition()	
-	local result, errorMessage = pcall(ToolChange.internal.TryGotoMTCPosition)
-	if not result then
-		ToolForks.Error(errorMessage)
-	end
-end
-
--- Can throw
-function ToolChange.internal.TryGotoMTCPosition()
-	if not CWUtilities.IsHomed() then
-		error("Machine is not homed; not safe to go to the MTC position")		
-	end
-	
-	-- Based on Avid's code but fixed, and I removed the unit conversion stuff 
-	-- (that is nice, but I'm not going to worry about it, as nothing else in this file does and assumes one unit)
-	local inst = mc.mcGetInstance("TryGotoMTCPosition()")
-	local m_CurAbsMode = mc.mcCntlGetPoundVar(inst, mc.SV_MOD_GROUP_3) -- G90/G91 modal
-	
-	local pos = {"X", "Y", "Z"}
-	local zOffset = -0.25
-	for i = 1, 3 do
-		local axis = pos[i]
-		local val = mc.mcProfileGetString(inst, "RememberPos", axis, "NotFound") -- Get the ini position value
-		if (val == "NotFound") then
-			error("MTC position not found.\nYou must set MTC location first.")
-		end
-		pos[axis] = val
-	end
-				
-	local xyPos = string.format("X%.4f Y%.4f", pos.X, pos.Y)
-	local zPos = string.format("Z%.4f", pos.Z)
-		
-	MCCntlGcodeExecuteWait("G90\n" .. -- G90: absolute (not incremental)
-		"G00 G53 Z0.0\n" .. -- Rapid to Z0 (the top) for safety
-		"G00 G53 " .. xyPos .. "\n" .. --Rapid to X/Y
-		-- ""G01 G53 " .. zPos .. "F50.0\n" -- Rapid to the Z pos not sure I want to do this....so I'm leaving it out		
-		"G" .. m_CurAbsMode -- Restore the mode (probably always G90, but this is safer)
-		)
-
-	
-end
-
-
 function ToolChange.VerifyAirPressure()
 	if ToolForks.GetShouldCheckAirPressure() then
 		local state, rc = mc.mcSignalGetState(ToolChange.internal.pressureSigHandle)
@@ -154,34 +92,10 @@ function ToolChange.CloseDrawBar()
 	MCTry("CloseDrawBar", mc.mcSignalSetState, ToolChange.internal.drawBarSigHandle, 0)
 end
 
-function ToolChange.internal.ManualToolChangeRemoveByUser(tool)
-	ToolChange.internal.TryGotoMTCPosition()
-	local message = string.format("Manually remove tool %d from the spindle.\nClick OK after it is removed to continue.\nClick Cancel to cycle stop and abort.", tool)
-	local rc = wx.wxMessageBox(message, "Manual Tool Change", wx.wxOK + wx.wxCANCEL + wx.wxICON_WARNING)
-	if rc == wx.wxOK then
-		-- Set tool 0 active (no tool)
-		mc.mcToolSetCurrent(ToolChange.internal.inst, 0)		
-	else
-		-- abort...
-		error("User aborted manual tool change removal.")		
-	end
-end
-
-function ToolChange.internal.ManualToolChangeInstallByUser(tool)
-	ToolChange.internal.TryGotoMTCPosition()
-	local message = string.format("Manually install tool %d into the spindle.\nClick OK after it is installed to continue.\nClick Cancel to cycle stop and abort.", tool)
-	local rc = wx.wxMessageBox(message, "Manual Tool Change", wx.wxOK + wx.wxCANCEL + wx.wxICON_WARNING)
-	if rc == wx.wxOK then		
-		mc.mcToolSetCurrent(ToolChange.internal.inst, tool)		
-	else
-		-- abort...
-		error("User aborted manual tool change removal.")		
-	end	
-end
-
 function ToolChange.DoManualToolChangeWithMessage(message)
 	local rc = mc.mcCntlCycleStop(ToolChange.internal.inst) 
 	ToolChange.internal.CheckForNoError(rc, "CycleStop")
+	ToolChange.GotoManualToolChangeLocation()
 	wx.wxMessageBox(message)
 
 	-- COPIED from Avid m6.mcs
@@ -342,7 +256,7 @@ function ToolChange.PutToolBackInForkAtPosition(toolForkPosition)
 
 	-- give the tool a brief moment to pop out. I tried it without this, and it almost pulled my fork off.
 	-- my machine takes a bit for the tool to pop out.
-	MCCntlGcodeExecuteWait("G04 P%.4f", 0.3) 
+	-- MCCntlGcodeExecuteWait("G04 P%.4f", 0.1) 
 
 	-- Tool is released; raise the spindle up to the clearance height
 	local ZClearanceWithNoTool = ToolForks.GetZClearanceWithNoTool()
@@ -393,10 +307,10 @@ function ToolChange.LoadToolAtForkPosition(toolForkPosition, toolWasDroppedOff)
 	ToolChange.CloseDrawBar()
 
 	-- slight wait for the close to really happen
-	MCCntlGcodeExecuteWait("G04 P%.4f", 0.2)
+	--MCCntlGcodeExecuteWait("G04 P%.4f", 0.2)
 
 	-- Goes back down to zPos after being higher by the ToolForks.ZBump ...so we can slide out safely
-	MCCntlGcodeExecuteWait("G01 G90 G53 Z%.4f F50.0\n", zPos)
+	MCCntlGcodeExecuteWait("G01 G90 G53 Z%.4f F1250.0\n", zPos)
 	-- Slide out
 	MCCntlGcodeExecuteWait("G0 G90 G53 X%.4f Y%.4f\n", finalX, finalY)
 
@@ -412,6 +326,12 @@ function ToolChange.LoadToolAtForkPosition(toolForkPosition, toolWasDroppedOff)
 	
 end
 
+function ToolChange.GotoManualToolChangeLocation()
+	-- TODO: go to a nice spot to do this
+	-- re use the avid spot..
+	
+
+end
 
 -- returns the current state
 function ToolChange.internal.SaveState()
@@ -516,11 +436,6 @@ function ToolChange._TryDoToolChangeFromTo(currentTool, selectedTool)
 		return 
 	end
 	
-	-- Make sure we are homed..
-	if not CWUtilities.IsHomed() then
-		error("Machine is not homed")
-	end	
-	
 	ToolChange.internal.TurnOffSpindle()
 	ToolChange.SaveCurrentLocation()
 
@@ -541,24 +456,26 @@ function ToolChange._TryDoToolChangeFromTo(currentTool, selectedTool)
 			currentPosition.Number, selectedPosition.Number)
 	end
 
-	local state = ToolChange.internal.SaveState() -- don't do returns in the middle of a method after this
 
 	-- TODO: If currentTool is tool 0, ask the user to ensure the spindle has no tool in it!
 	if currentPosition == nil then		
 		if currentTool == 0 then
-			-- Maybe don't always show this warning..I'm starting to not like it
+			-- Maybe don't awlays show this warning..I'm starting to not like it
 			local rc = wx.wxMessageBox("Starting from Tool 0. Ensure the spindle is empty. \nWould you like to continue?", 
 				"Tool Warning", wx.wxYES_NO)
 			if rc ~= wx.wxYES then
 				error("User aborted tool change")
 			end
 		else		
-			-- Current tool has to be manually removed. 
-			-- The user has to remove it and then insert the next tool..which might be in a fork. 
-			ToolChange.internal.ManualToolChangeRemoveByUser(currentTool)	
+			-- Current tool has to be manually removed. The user has to remove it and then insert the next tool..which might be in a fork. 
+			-- We could make this better by checking that ..but continuing after a stop requires more logic that I'm not sure how to handle, especially if the user has to measure the tool height.
+			local message = string.format("Current tool T%d has no tool fork holder to go back to.\nRemove it and manually install tool T%d and continue", currentTool, selectedTool)
+			ToolChange.DoManualToolChangeWithMessage(message)
+			do return end -- not an error...early return
 		end
-	end	
+	end
 
+	local state = ToolChange.internal.SaveState() -- don't do returns in the middle of a method after this
 	-- Maybe do a pcall to ensure we can restore the state (which may not work!)
 	-- and re-throw the error if caught..however, restoring state will fail because gcode calls fail on the estop state
 	-- until the user clears it...so, don't worry about it
@@ -579,8 +496,9 @@ function ToolChange._TryDoToolChangeFromTo(currentTool, selectedTool)
 		mc.mcToolSetCurrent(ToolChange.internal.inst, selectedTool)
 		ToolForks.Error("Tool change done. Current tool now: T%d", selectedTool)
 	else
+		local message = string.format("Selected Tool T%d has no Tool Fork Position.\nManually install it and continue.", selectedTool)
 		ToolChange.CloseDrawBar()
-		ToolChange.internal.ManualToolChangeInstallByUser(selectedTool) -- calls the set method too
+		ToolChange.DoManualToolChangeWithMessage(message)
 	end
 
 	ToolChange.RestoreLastLocation() 
@@ -595,7 +513,6 @@ end
 
 if (mc.mcInEditor() == 1) then
 	--ToolChange.internal.TestToolChange()
-	-- ToolChange.GotoMTCPosition()
 end
 
 return ToolChange
