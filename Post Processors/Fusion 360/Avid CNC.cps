@@ -105,7 +105,7 @@ var coolants = [
   {id: COOLANT_FLOOD, on: 8},
   {id: COOLANT_MIST, on: 7},
   {id: COOLANT_THROUGH_TOOL},
-  {id: COOLANT_AIR, on: 7},
+  {id: COOLANT_AIR},
   {id: COOLANT_AIR_THROUGH_TOOL},
   {id: COOLANT_SUCTION},
   {id: COOLANT_FLOOD_MIST},
@@ -811,7 +811,6 @@ function onSection() {
 
     if (properties.useM6) {
       writeBlock("T" + toolFormat.format(tool.number), mFormat.format(6));
-      writeBlock("G43 H" + toolFormat.format(tool.number));
     } else {
       writeBlock("T" + toolFormat.format(tool.number));
     }
@@ -1911,9 +1910,6 @@ function writeRetract() {
 function onClose() {
   writeln("");
 
-  writeBlock(mFormat.format(5)); // turns off the spindle at this point
-
-
   if (properties.useDustCollector) {
     writeBlock(mFormat.format(9)); // turns off dust collector
   } else {
@@ -1924,7 +1920,7 @@ function onClose() {
 
   setWorkPlane(new Vector(0, 0, 0)); // reset working plane
 
- //writeRetract(X, Y); // corbin, don't reset the x/y, just go up to g28
+  writeRetract(X, Y);
 
   onImpliedCommand(COMMAND_END);
   onImpliedCommand(COMMAND_STOP_SPINDLE);
